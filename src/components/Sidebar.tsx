@@ -11,6 +11,7 @@ interface SidebarProps {
   collapsed: boolean;
   onToggle: () => void;
   userRole: 'client' | 'provider' | 'admin';
+  onMobileClose?: () => void;
 }
 
 const clientNavItems = [
@@ -38,7 +39,7 @@ const adminNavItems = [
   { id: 'nav-admin-stats', label: 'Estadísticas', icon: 'ChartBarIcon', href: '/admin-panel' },
 ];
 
-export default function Sidebar({ collapsed, onToggle, userRole }: SidebarProps) {
+export default function Sidebar({ collapsed, onToggle, userRole, onMobileClose }: SidebarProps) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const { user, signOut } = useAuth();
@@ -125,6 +126,7 @@ export default function Sidebar({ collapsed, onToggle, userRole }: SidebarProps)
             <Link
               key={item.id}
               href={item.href}
+              onClick={onMobileClose}
               className={`flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-150 group relative ${
                 isActive
                   ? 'bg-white/15 text-white font-semibold' :'text-white/70 hover:bg-white/10 hover:text-white'

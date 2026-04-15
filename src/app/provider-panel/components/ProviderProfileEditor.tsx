@@ -116,7 +116,7 @@ export default function ProviderProfileEditor() {
 
       <form onSubmit={handleSubmit(onSubmit)}>
         {/* Public profile preview */}
-        <div className="bg-white rounded-xl border border-[#E2E8F0] shadow-card p-6 mb-6">
+        <div className="bg-white rounded-xl border border-[#E2E8F0] shadow-card p-4 sm:p-6 mb-6">
           <h3 className="text-base font-semibold text-[#2D3748] mb-5 flex items-center gap-2">
             <Icon name="BuildingStorefrontIcon" size={18} className="text-[#1E3A5F]" />
             Ficha pública
@@ -201,7 +201,7 @@ export default function ProviderProfileEditor() {
         </div>
 
         {/* Service details */}
-        <div className="bg-white rounded-xl border border-[#E2E8F0] shadow-card p-6 mb-6">
+        <div className="bg-white rounded-xl border border-[#E2E8F0] shadow-card p-4 sm:p-6 mb-6">
           <h3 className="text-base font-semibold text-[#2D3748] mb-5 flex items-center gap-2">
             <Icon name="Cog6ToothIcon" size={18} className="text-[#1E3A5F]" />
             Detalles del servicio
@@ -250,14 +250,14 @@ export default function ProviderProfileEditor() {
         </div>
 
         {/* Save bar */}
-        <div className="sticky bottom-4 bg-white border border-[#E2E8F0] rounded-xl shadow-modal p-4 flex items-center justify-between">
+        <div className="sticky bottom-4 bg-white border border-[#E2E8F0] rounded-xl shadow-modal p-3 sm:p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
           <p className="text-sm text-[#718096]">
             {isDirty ? 'Cambios sin guardar' : savedOk ? 'Guardado correctamente' : 'Sin cambios pendientes'}
           </p>
           <button
             type="submit"
             disabled={isSaving || !isDirty}
-            className="inline-flex items-center gap-2 px-6 py-2.5 bg-[#1E3A5F] text-white text-sm font-semibold rounded-lg hover:bg-[#2C5282] transition-all duration-150 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-6 py-2.5 bg-[#1E3A5F] text-white text-sm font-semibold rounded-lg hover:bg-[#2C5282] transition-all duration-150 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {isSaving ? (
               <><Icon name="ArrowPathIcon" size={16} className="animate-spin" />Guardando...</>
