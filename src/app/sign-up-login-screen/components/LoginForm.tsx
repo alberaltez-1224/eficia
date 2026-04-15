@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useRef } from 'react';
+import React, { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
@@ -20,7 +20,6 @@ export default function LoginForm({ onRegister }: { onRegister?: () => void }) {
   const [authError, setAuthError] = useState<string | null>(null);
   const { signIn } = useAuth();
   const router = useRouter();
-  const submittingRef = useRef(false);
 
   const {
     register,
@@ -29,9 +28,7 @@ export default function LoginForm({ onRegister }: { onRegister?: () => void }) {
   } = useForm<LoginFormData>();
 
   const onSubmit = async (data: LoginFormData) => {
-    // Prevent duplicate submissions
-    if (submittingRef.current) return;
-    submittingRef.current = true;
+    if (isLoading) return;
     setIsLoading(true);
     setAuthError(null);
 
@@ -39,7 +36,6 @@ export default function LoginForm({ onRegister }: { onRegister?: () => void }) {
       const result = await signIn(data.email, data.password);
       const user = result?.user;
       if (user) {
-        // Use the singleton client — no extra instantiation
         const supabase = createClient();
         const { data: profile } = await supabase
           .from('user_profiles')
@@ -58,16 +54,13 @@ export default function LoginForm({ onRegister }: { onRegister?: () => void }) {
     } catch (error: any) {
       const msg: string = error?.message || '';
       let displayError: string;
-
       if (msg === 'Invalid login credentials') {
         displayError = 'Email o contraseña incorrectos';
       } else {
         displayError = msg || 'Error al iniciar sesión';
       }
-
-      submittingRef.current = false;
-      setIsLoading(false);
       setAuthError(displayError);
+      setIsLoading(false);
     }
   };
 
