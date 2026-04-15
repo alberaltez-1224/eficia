@@ -38,25 +38,6 @@ const setCookie = (name: string, value: string, options?: any) => {
   document.cookie = s;
 };
 
-const getToken = () =>
-  (canUseCookies() ? fromCookies() : fromStorage())
-    .find((c) => c.name.includes('auth-token'))?.value ?? null;
-
-if (typeof window !== 'undefined' && !(window as any).__sb_patched__) {
-  (window as any).__sb_patched__ = true;
-  const orig = window.fetch.bind(window);
-  window.fetch = (input, init) => {
-    const token = getToken();
-    const url = typeof input === 'string' ? input
-      : input instanceof URL ? input.href
-      : (input as Request).url;
-    if (token && (url.startsWith('/') || url.startsWith(window.location.origin))) {
-      init = { ...(init || {}), headers: { ...(init?.headers || {}), 'x-sb-token': token } };
-    }
-    return orig(input, init);
-  };
-}
-
 export function clearStaleAuthTokens() {
   if (typeof document !== 'undefined') {
     document.cookie.split(';').forEach((c) => {
@@ -71,7 +52,6 @@ export function clearStaleAuthTokens() {
       .filter((k) => k.startsWith(PFX) || k.startsWith('sb-'))
       .forEach((k) => localStorage.removeItem(k));
   } catch {}
-  // Reset singleton so a fresh client is created after clearing
   if (typeof window !== 'undefined') {
     (window as any).__supabase_client__ = undefined;
   }
