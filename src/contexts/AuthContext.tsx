@@ -2,6 +2,7 @@
 
 import { createContext, useContext, useEffect, useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
+import { clearStaleAuthTokens } from '@/lib/supabase/client';
 
 interface AuthContextType {
   user: any;
@@ -51,9 +52,11 @@ function initAuth() {
   });
 
   // Attempt to get the current session; if the Supabase project is unreachable
-  // (e.g. "Failed to fetch" during token refresh), mark auth as ready with no
-  // session so the app doesn't hang in a loading state.
+  // (e.g. "Failed to fetch" during token refresh), clear stale tokens and mark
+  // auth as ready with no session so the app doesn't hang in a loading state.
   supabase.auth.getSession().catch(() => {
+    // Clear stale tokens so the broken refresh isn't retried on next load
+    clearStaleAuthTokens();
     if (!_ready) {
       _session = null;
       _user = null;

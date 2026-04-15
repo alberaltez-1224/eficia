@@ -57,6 +57,23 @@ export function clearStaleAuthTokens() {
   }
 }
 
+// Wraps the global fetch to silently swallow network errors during Supabase
+// token refresh so they never surface as unhandled console errors.
+function makeSafeFetch() {
+  return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    try {
+      return await fetch(input, init);
+    } catch (err: any) {
+      // Return a synthetic 503 response so Supabase handles it gracefully
+      // instead of throwing an unhandled "Failed to fetch" error.
+      return new Response(JSON.stringify({ error: 'network_error', message: err?.message ?? 'Failed to fetch' }), {
+        status: 503,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+  };
+}
+
 export function createClient() {
   if (typeof window !== 'undefined' && (window as any).__supabase_client__) {
     return (window as any).__supabase_client__;
@@ -69,6 +86,9 @@ export function createClient() {
         persistSession: true,
         autoRefreshToken: false,
         detectSessionInUrl: true,
+      },
+      global: {
+        fetch: makeSafeFetch(),
       },
       cookies: {
         getAll: () => canUseCookies() ? fromCookies() : fromStorage(),
