@@ -1,9 +1,20 @@
 'use client';
 
-import { createContext, useContext, useEffect, useState } from 'react';
+import { createContext, useContext, useEffect, useState, useRef } from 'react';
 import { createClient, clearStaleAuthTokens } from '@/lib/supabase/client';
 
-const AuthContext = createContext<any>({});
+interface AuthContextType {
+  user: any;
+  session: any;
+  loading: boolean;
+  signUp: (email: string, password: string, metadata?: any) => Promise<any>;
+  signIn: (email: string, password: string) => Promise<any>;
+  signOut: () => Promise<void>;
+  isEmailVerified: () => boolean;
+  getUserProfile: () => Promise<any>;
+}
+
+const AuthContext = createContext<AuthContextType | null>(null);
 
 export const useAuth = () => {
   const context = useContext(AuthContext);
@@ -14,88 +25,93 @@ export const useAuth = () => {
 };
 
 // ---------------------------------------------------------------------------
-// Module-level singleton — the subscription is created ONCE per browser session
-// regardless of how many times AuthProvider mounts/unmounts (React Strict Mode,
-// HMR, etc.).  This prevents two competing onAuthStateChange listeners from
-// fighting over the same IndexedDB/localStorage lock and throwing:
-//   "AbortError: Lock broken by another request with the 'steal' option."
+// Module-level singleton — ONE subscription for the entire browser session.
+// Prevents duplicate listeners from React Strict Mode double-mount / HMR.
 // ---------------------------------------------------------------------------
-let _initialized = false;
+let _sub: { unsubscribe: () => void } | null = null;
 let _session: any = null;
 let _user: any = null;
-let _listeners: Set<() => void> = new Set();
+let _ready = false;
+const _listeners = new Set<() => void>();
 
-function notifyListeners() {
+function notify() {
   _listeners.forEach((fn) => fn());
 }
 
-function initAuthSingleton() {
-  if (_initialized) return;
-  _initialized = true;
+function ensureSubscription() {
+  if (_sub) return; // already subscribed
 
   const supabase = createClient();
 
-  // Seed initial state from local storage — zero network calls
+  // getSession() reads from local storage — ZERO network calls
   supabase.auth.getSession().then(({ data: { session } }) => {
-    _session = session;
+    _session = session ?? null;
     _user = session?.user ?? null;
-    notifyListeners();
+    _ready = true;
+    notify();
   }).catch(() => {
-    notifyListeners();
+    _session = null;
+    _user = null;
+    _ready = true;
+    notify();
   });
 
-  supabase.auth.onAuthStateChange((event, session) => {
-    if (event === 'TOKEN_REFRESHED' && !session) {
-      clearStaleAuthTokens();
+  // onAuthStateChange fires for SIGNED_IN, SIGNED_OUT, TOKEN_REFRESHED, etc.
+  // It does NOT make extra API calls on its own — it reacts to Supabase SDK events.
+  const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+    if (event === 'SIGNED_OUT' || (event === 'TOKEN_REFRESHED' && !session)) {
+      if (event === 'TOKEN_REFRESHED' && !session) {
+        clearStaleAuthTokens();
+      }
       _session = null;
       _user = null;
-      notifyListeners();
+      _ready = true;
+      notify();
       return;
     }
 
-    if (event === 'SIGNED_OUT') {
-      _session = null;
-      _user = null;
-      notifyListeners();
-      return;
-    }
-
-    _session = session;
+    _session = session ?? null;
     _user = session?.user ?? null;
-    notifyListeners();
+    _ready = true;
+    notify();
   });
+
+  _sub = subscription;
 }
 
 export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
-  const [user, setUser] = useState<any>(_user);
-  const [session, setSession] = useState<any>(_session);
-  const [loading, setLoading] = useState(!_initialized);
+  const [user, setUser] = useState<any>(() => _user);
+  const [session, setSession] = useState<any>(() => _session);
+  const [loading, setLoading] = useState(() => !_ready);
+  const mountedRef = useRef(true);
 
   useEffect(() => {
-    // Ensure the singleton is running
-    initAuthSingleton();
+    mountedRef.current = true;
 
-    // Sync component state with the singleton
+    ensureSubscription();
+
     const sync = () => {
+      if (!mountedRef.current) return;
       setSession(_session);
       setUser(_user);
       setLoading(false);
     };
 
-    // If already initialized, sync immediately
-    if (_initialized && _session !== undefined) {
+    // If already ready, sync immediately
+    if (_ready) {
       sync();
     }
 
     _listeners.add(sync);
+
     return () => {
+      mountedRef.current = false;
       _listeners.delete(sync);
     };
   }, []);
 
   const supabase = createClient();
 
-  // Email/Password Sign Up
   const signUp = async (email: string, password: string, metadata: any = {}) => {
     const { data, error } = await supabase.auth.signUp({
       email,
@@ -106,8 +122,8 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
           avatar_url: metadata?.avatarUrl || '',
           role: metadata?.role || 'cliente',
         },
-        emailRedirectTo: `${typeof window !== 'undefined' ? window.location.origin : ''}/auth/callback`
-      }
+        emailRedirectTo: `${typeof window !== 'undefined' ? window.location.origin : ''}/auth/callback`,
+      },
     });
     if (error) throw error;
     if (data?.user && (!data.user.identities || data.user.identities.length === 0)) {
@@ -116,35 +132,32 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     return data;
   };
 
-  // Email/Password Sign In
+  // Single call to signInWithPassword — no extra getUser() calls
   const signIn = async (email: string, password: string) => {
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email,
-      password
-    });
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) throw error;
     return data;
   };
 
-  // Sign Out
+  // Clear local state first, then call signOut — prevents UI flicker waiting for API
   const signOut = async () => {
-    const { error } = await supabase.auth.signOut();
-    if (error) throw error;
+    _session = null;
+    _user = null;
+    _ready = true;
+    notify();
+    clearStaleAuthTokens();
+    try {
+      await supabase.auth.signOut();
+    } catch {
+      // Ignore errors — local state is already cleared
+    }
   };
 
-  // Get Current User
-  const getCurrentUser = async () => {
-    const { data: { user }, error } = await supabase.auth.getUser();
-    if (error) throw error;
-    return user;
-  };
-
-  // Check if Email is Verified
   const isEmailVerified = () => {
-    return user?.email_confirmed_at !== null;
+    return user?.email_confirmed_at != null;
   };
 
-  // Get User Profile from Database
+  // Reads from DB — only called explicitly, never in useEffect
   const getUserProfile = async () => {
     if (!user) return null;
     const { data, error } = await supabase
@@ -156,16 +169,15 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     return data;
   };
 
-  const value = {
+  const value: AuthContextType = {
     user,
     session,
     loading,
     signUp,
     signIn,
     signOut,
-    getCurrentUser,
     isEmailVerified,
-    getUserProfile
+    getUserProfile,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

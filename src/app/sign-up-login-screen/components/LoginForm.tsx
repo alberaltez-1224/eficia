@@ -1,11 +1,12 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { useForm } from 'react-hook-form';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import Icon from '@/components/ui/AppIcon';
 import { useAuth } from '@/contexts/AuthContext';
+import { createClient } from '@/lib/supabase/client';
 
 interface LoginFormData {
   email: string;
@@ -19,6 +20,7 @@ export default function LoginForm({ onRegister }: { onRegister?: () => void }) {
   const [authError, setAuthError] = useState<string | null>(null);
   const { signIn } = useAuth();
   const router = useRouter();
+  const submittingRef = useRef(false);
 
   const {
     register,
@@ -27,14 +29,17 @@ export default function LoginForm({ onRegister }: { onRegister?: () => void }) {
   } = useForm<LoginFormData>();
 
   const onSubmit = async (data: LoginFormData) => {
+    // Prevent duplicate submissions
+    if (submittingRef.current) return;
+    submittingRef.current = true;
     setIsLoading(true);
     setAuthError(null);
+
     try {
       const result = await signIn(data.email, data.password);
-      // Use user from signIn result directly — avoids an extra getUser() API call
       const user = result?.user;
       if (user) {
-        const { createClient } = await import('@/lib/supabase/client');
+        // Use the singleton client — no extra instantiation
         const supabase = createClient();
         const { data: profile } = await supabase
           .from('user_profiles')
@@ -49,11 +54,12 @@ export default function LoginForm({ onRegister }: { onRegister?: () => void }) {
         } else {
           router.push('/client-dashboard');
         }
-        router.refresh();
       }
     } catch (error: any) {
-      setAuthError(error.message === 'Invalid login credentials' ?'Email o contraseña incorrectos' : error.message ||'Error al iniciar sesión');
-    } finally {
+      setAuthError(
+        error.message === 'Invalid login credentials' ?'Email o contraseña incorrectos' : error.message ||'Error al iniciar sesión'
+      );
+      submittingRef.current = false;
       setIsLoading(false);
     }
   };
