@@ -1,76 +1,102 @@
 'use client';
 
-import { createContext, useContext, useEffect, useRef, useState } from 'react';
-import { createClient, clearStaleAuthTokens } from '@/lib/supabase/client';
+import { createContext, useContext, useEffect, useState } from 'react';
+import { createClient } from '@/lib/supabase/client';
+import { clearStaleAuthTokens } from '@/lib/supabase/client';
 
-const AuthContext = createContext<any>({});
+interface AuthContextType {
+  user: any;
+  session: any;
+  loading: boolean;
+  signUp: (email: string, password: string, metadata?: any) => Promise<any>;
+  signIn: (email: string, password: string) => Promise<any>;
+  signOut: () => Promise<void>;
+  isEmailVerified: () => boolean;
+  getUserProfile: () => Promise<any>;
+}
+
+const AuthContext = createContext<AuthContextType | null>(null);
 
 export const useAuth = () => {
   const context = useContext(AuthContext);
-  if (!context) {
-    throw new Error('useAuth must be used within AuthProvider');
-  }
+  if (!context) throw new Error('useAuth must be used within AuthProvider');
   return context;
 };
 
+// ---------------------------------------------------------------------------
+// Module-level singleton state — one listener, registered once, never again.
+// ---------------------------------------------------------------------------
+let _initialized = false;
+let _session: any = null;
+let _user: any = null;
+let _ready = false;
+const _listeners = new Set<() => void>();
+
+function notify() {
+  _listeners.forEach((fn) => fn());
+}
+
+function initAuth() {
+  if (_initialized) return;
+  _initialized = true;
+
+  const supabase = createClient();
+
+  // Register ONE onAuthStateChange — this is the only source of auth truth.
+  // No getSession(), no getUser(), no retries.
+  supabase.auth.onAuthStateChange((_event, session) => {
+    _session = session ?? null;
+    _user = session?.user ?? null;
+    _ready = true;
+    notify();
+  });
+
+  // Attempt to get the current session; if the Supabase project is unreachable
+  // (e.g. "Failed to fetch" during token refresh), clear stale tokens and mark
+  // auth as ready with no session so the app doesn't hang in a loading state.
+  supabase.auth.getSession().catch(() => {
+    // Clear stale tokens so the broken refresh isn't retried on next load
+    clearStaleAuthTokens();
+    if (!_ready) {
+      _session = null;
+      _user = null;
+      _ready = true;
+      notify();
+    }
+  });
+}
+
 export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
-  const [user, setUser] = useState<any>(null);
-  const [session, setSession] = useState<any>(null);
-  const [loading, setLoading] = useState(true);
-  const supabaseRef = useRef(createClient());
-  const supabase = supabaseRef.current;
+  const [user, setUser] = useState<any>(() => _user);
+  const [session, setSession] = useState<any>(() => _session);
+  const [loading, setLoading] = useState(() => !_ready);
 
   useEffect(() => {
     let mounted = true;
 
-    // Use getSession() first — reads from local storage, makes NO API call
-    // This avoids triggering a getUser() network request on every page load
-    supabase.auth.getSession().then(({ data: { session: initialSession } }) => {
+    const sync = () => {
       if (!mounted) return;
-      setSession(initialSession);
-      setUser(initialSession?.user ?? null);
+      setSession(_session);
+      setUser(_user);
       setLoading(false);
-    }).catch(() => {
-      if (mounted) setLoading(false);
-    });
+    };
 
-    const {
-      data: { subscription }
-    } = supabase.auth.onAuthStateChange((event, session) => {
-      if (!mounted) return;
+    _listeners.add(sync);
 
-      // Handle token refresh failure — clear stale tokens but avoid extra API calls
-      if (event === 'TOKEN_REFRESHED' && !session) {
-        clearStaleAuthTokens();
-        // Update state directly without calling signOut() (which makes an API call)
-        if (mounted) {
-          setSession(null);
-          setUser(null);
-          setLoading(false);
-        }
-        return;
-      }
+    // If already ready (e.g. navigating between pages), sync immediately
+    if (_ready) sync();
 
-      // Handle explicit sign-out
-      if (event === 'SIGNED_OUT') {
-        setSession(null);
-        setUser(null);
-        setLoading(false);
-        return;
-      }
-
-      setSession(session);
-      setUser(session?.user ?? null);
-      setLoading(false);
-    });
+    // Initialize — safe to call multiple times, only runs once
+    initAuth();
 
     return () => {
       mounted = false;
-      subscription.unsubscribe();
+      _listeners.delete(sync);
     };
   }, []);
 
-  // Email/Password Sign Up
+  const supabase = createClient();
+
   const signUp = async (email: string, password: string, metadata: any = {}) => {
     const { data, error } = await supabase.auth.signUp({
       email,
@@ -81,8 +107,8 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
           avatar_url: metadata?.avatarUrl || '',
           role: metadata?.role || 'cliente',
         },
-        emailRedirectTo: `${typeof window !== 'undefined' ? window.location.origin : ''}/auth/callback`
-      }
+        emailRedirectTo: `${typeof window !== 'undefined' ? window.location.origin : ''}/auth/callback`,
+      },
     });
     if (error) throw error;
     if (data?.user && (!data.user.identities || data.user.identities.length === 0)) {
@@ -91,35 +117,30 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     return data;
   };
 
-  // Email/Password Sign In
+  // ONE signInWithPassword call — nothing else
   const signIn = async (email: string, password: string) => {
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email,
-      password
-    });
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) throw error;
     return data;
   };
 
-  // Sign Out
   const signOut = async () => {
-    const { error } = await supabase.auth.signOut();
-    if (error) throw error;
+    // Reset module state so next login starts fresh
+    _session = null;
+    _user = null;
+    _ready = false;
+    _initialized = false;
+    notify();
+
+    try {
+      await supabase.auth.signOut();
+    } catch {
+      // Ignore — local state already cleared
+    }
   };
 
-  // Get Current User
-  const getCurrentUser = async () => {
-    const { data: { user }, error } = await supabase.auth.getUser();
-    if (error) throw error;
-    return user;
-  };
+  const isEmailVerified = () => user?.email_confirmed_at != null;
 
-  // Check if Email is Verified
-  const isEmailVerified = () => {
-    return user?.email_confirmed_at !== null;
-  };
-
-  // Get User Profile from Database
   const getUserProfile = async () => {
     if (!user) return null;
     const { data, error } = await supabase
@@ -131,17 +152,9 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     return data;
   };
 
-  const value = {
-    user,
-    session,
-    loading,
-    signUp,
-    signIn,
-    signOut,
-    getCurrentUser,
-    isEmailVerified,
-    getUserProfile
-  };
-
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+  return (
+    <AuthContext.Provider value={{ user, session, loading, signUp, signIn, signOut, isEmailVerified, getUserProfile }}>
+      {children}
+    </AuthContext.Provider>
+  );
 };

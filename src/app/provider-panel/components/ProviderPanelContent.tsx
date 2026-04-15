@@ -61,15 +61,16 @@ export default function ProviderPanelContent() {
   return (
     <div className="min-h-screen bg-[#F5F7FA]">
       {/* Header */}
-      <div className="bg-white border-b border-[#E2E8F0] px-6 lg:px-8 xl:px-10 py-5">
-        <div className="max-w-screen-2xl mx-auto flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-bold text-[#1E3A5F]">Panel de proveedor</h1>
-            <p className="text-sm text-[#718096] mt-0.5">
-              <span className="font-semibold text-[#2D3748]">{providerName || 'Tu empresa'}</span> · Estado: <span className={`font-semibold ${statusColor}`}>{statusLabel}</span>
+      <div className="bg-white border-b border-[#E2E8F0] px-4 sm:px-6 lg:px-8 xl:px-10 py-4 sm:py-5">
+        <div className="max-w-screen-2xl mx-auto flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <h1 className="text-xl sm:text-2xl font-bold text-[#1E3A5F] truncate">Panel de proveedor</h1>
+            <p className="text-xs sm:text-sm text-[#718096] mt-0.5">
+              <span className="font-semibold text-[#2D3748]">{providerName || 'Tu empresa'}</span>
+              <span className="hidden sm:inline"> · Estado: <span className={`font-semibold ${statusColor}`}>{statusLabel}</span></span>
             </p>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 shrink-0">
             <div className="hidden sm:flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
               <Icon name="ExclamationCircleIcon" size={16} className="text-amber-500" />
               <span className="text-xs font-semibold text-amber-700">Perfil {profileComplete}% completo</span>
@@ -82,10 +83,10 @@ export default function ProviderPanelContent() {
         </div>
       </div>
 
-      <div className="max-w-screen-2xl mx-auto px-6 lg:px-8 xl:px-10 py-8">
+      <div className="max-w-screen-2xl mx-auto px-4 sm:px-6 lg:px-8 xl:px-10 py-5 sm:py-8">
         {/* Profile completeness banner */}
         {profileComplete < 100 && (
-          <div className="mb-6 bg-white border border-[#E2E8F0] rounded-xl p-4 shadow-card">
+          <div className="mb-5 bg-white border border-[#E2E8F0] rounded-xl p-4 shadow-card">
             <div className="flex items-center justify-between mb-2">
               <p className="text-sm font-semibold text-[#2D3748]">Completa tu perfil para aparecer mejor posicionado</p>
               <span className="text-sm font-bold text-[#1E3A5F]">{profileComplete}%</span>
@@ -96,7 +97,7 @@ export default function ProviderPanelContent() {
                 style={{ width: `${profileComplete}%` }}
               />
             </div>
-            <div className="flex gap-4 text-xs text-[#718096]">
+            <div className="flex flex-wrap gap-3 text-xs text-[#718096]">
               <span className="flex items-center gap-1 text-[#38A169]"><Icon name="CheckIcon" size={11} />Datos básicos</span>
               <span className="flex items-center gap-1 text-[#38A169]"><Icon name="CheckIcon" size={11} />Categorías</span>
               <span className="flex items-center gap-1 text-amber-500"><Icon name="ExclamationCircleIcon" size={11} />Logo pendiente</span>
@@ -109,9 +110,9 @@ export default function ProviderPanelContent() {
         <ProviderKPICards />
 
         {/* Tabs */}
-        <div className="flex items-center gap-1 bg-white rounded-xl border border-[#E2E8F0] p-1 mb-6 w-fit shadow-card flex-wrap">
+        <div className="flex items-center gap-1 bg-white rounded-xl border border-[#E2E8F0] p-1 mb-6 shadow-card overflow-x-auto">
           {[
-            { id: 'leads', label: 'Leads recibidos', badge: newLeadsCount > 0 ? newLeadsCount : null },
+            { id: 'leads', label: 'Leads', badge: newLeadsCount > 0 ? newLeadsCount : null },
             { id: 'profile', label: 'Mi perfil' },
             { id: 'categories', label: 'Categorías' },
             { id: 'stats', label: 'Estadísticas' },
@@ -119,7 +120,7 @@ export default function ProviderPanelContent() {
             <button
               key={`ptab-${tab.id}`}
               onClick={() => setActiveTab(tab.id as PanelTab)}
-              className={`flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-lg transition-all duration-150 ${
+              className={`flex items-center gap-2 px-3 sm:px-4 py-2 text-xs sm:text-sm font-semibold rounded-lg transition-all duration-150 whitespace-nowrap ${
                 activeTab === tab.id
                   ? 'bg-[#1E3A5F] text-white'
                   : 'text-[#718096] hover:text-[#2D3748]'
@@ -139,7 +140,7 @@ export default function ProviderPanelContent() {
         {activeTab === 'profile' && <ProviderProfileEditor />}
         {activeTab === 'categories' && <ProviderCategoryBadges />}
         {activeTab === 'stats' && (
-          <div className="bg-white rounded-xl border border-[#E2E8F0] shadow-card p-12 text-center">
+          <div className="bg-white rounded-xl border border-[#E2E8F0] shadow-card p-8 sm:p-12 text-center">
             <div className="w-16 h-16 bg-[#EEF2F8] rounded-2xl flex items-center justify-center mx-auto mb-4">
               <Icon name="ChartBarIcon" size={32} className="text-[#1E3A5F]" />
             </div>

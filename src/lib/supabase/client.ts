@@ -38,25 +38,6 @@ const setCookie = (name: string, value: string, options?: any) => {
   document.cookie = s;
 };
 
-const getToken = () =>
-  (canUseCookies() ? fromCookies() : fromStorage())
-    .find((c) => c.name.includes('auth-token'))?.value ?? null;
-
-if (typeof window !== 'undefined' && !(window as any).__sb_patched__) {
-  (window as any).__sb_patched__ = true;
-  const orig = window.fetch.bind(window);
-  window.fetch = (input, init) => {
-    const token = getToken();
-    const url = typeof input === 'string' ? input
-      : input instanceof URL ? input.href
-      : (input as Request).url;
-    if (token && (url.startsWith('/') || url.startsWith(window.location.origin))) {
-      init = { ...(init || {}), headers: { ...(init?.headers || {}), 'x-sb-token': token } };
-    }
-    return orig(input, init);
-  };
-}
-
 export function clearStaleAuthTokens() {
   if (typeof document !== 'undefined') {
     document.cookie.split(';').forEach((c) => {
@@ -71,10 +52,26 @@ export function clearStaleAuthTokens() {
       .filter((k) => k.startsWith(PFX) || k.startsWith('sb-'))
       .forEach((k) => localStorage.removeItem(k));
   } catch {}
-  // Reset singleton so a fresh client is created after clearing
   if (typeof window !== 'undefined') {
     (window as any).__supabase_client__ = undefined;
   }
+}
+
+// Wraps the global fetch to silently swallow network errors during Supabase
+// token refresh so they never surface as unhandled console errors.
+function makeSafeFetch() {
+  return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    try {
+      return await fetch(input, init);
+    } catch (err: any) {
+      // Return a synthetic 503 response so Supabase handles it gracefully
+      // instead of throwing an unhandled "Failed to fetch" error.
+      return new Response(JSON.stringify({ error: 'network_error', message: err?.message ?? 'Failed to fetch' }), {
+        status: 503,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+  };
 }
 
 export function createClient() {
@@ -85,6 +82,14 @@ export function createClient() {
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
+      auth: {
+        persistSession: true,
+        autoRefreshToken: false,
+        detectSessionInUrl: true,
+      },
+      global: {
+        fetch: makeSafeFetch(),
+      },
       cookies: {
         getAll: () => canUseCookies() ? fromCookies() : fromStorage(),
         setAll(cookiesToSet) {

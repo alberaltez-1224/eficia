@@ -1,11 +1,2 @@
--- Add Alimentación category
-INSERT INTO public.categories (id, name, slug, icon, description, sort_order)
-VALUES (
-  gen_random_uuid(),
-  'Alimentación',
-  'alimentacion',
-  '🍽️',
-  'Catering, vending y suministros de alimentación para empresas',
-  8
-)
-ON CONFLICT (slug) DO NOTHING;
+-- SUPERSEDED: This migration has been consolidated into 20260415200000_eficia_complete.sql
+-- This file is intentionally left as a no-op to preserve migration history ordering.

@@ -1,4 +1,5 @@
--- Eficia Platform - Complete Schema Migration
+-- Eficia Platform - Full Schema Migration (New Project)
+-- Consolidated from all previous migrations
 -- Tables: user_profiles, companies, providers, categories, leads, savings, reviews
 
 -- ============================================================
@@ -91,7 +92,7 @@ CREATE TABLE IF NOT EXISTS public.provider_categories (
 CREATE TABLE IF NOT EXISTS public.savings (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   company_id UUID NOT NULL REFERENCES public.companies(id) ON DELETE CASCADE,
-  category_id UUID NOT NULL REFERENCES public.categories(id) ON DELETE SET NULL,
+  category_id UUID REFERENCES public.categories(id) ON DELETE SET NULL,
   employees TEXT,
   annual_spend NUMERIC,
   estimated_saving_min NUMERIC,
@@ -138,7 +139,7 @@ CREATE INDEX IF NOT EXISTS idx_leads_status ON public.leads(status);
 CREATE INDEX IF NOT EXISTS idx_savings_company_id ON public.savings(company_id);
 
 -- ============================================================
--- 4. FUNCTIONS
+-- 4. FUNCTIONS (must be before RLS policies)
 -- ============================================================
 
 -- Auto-create user_profile on signup
@@ -171,7 +172,7 @@ BEGIN
 END;
 $$;
 
--- Check if user is admin (uses auth metadata to avoid recursion)
+-- Check if user is admin
 CREATE OR REPLACE FUNCTION public.is_admin()
 RETURNS BOOLEAN
 LANGUAGE sql
@@ -248,11 +249,11 @@ FOR ALL TO authenticated
 USING (public.is_admin())
 WITH CHECK (public.is_admin());
 
--- providers (public read for verified, owner write, admin all)
+-- providers (public read for pendiente+verificado, owner write, admin all)
 DROP POLICY IF EXISTS "public_read_verified_providers" ON public.providers;
 CREATE POLICY "public_read_verified_providers" ON public.providers
 FOR SELECT TO public
-USING (status = 'verificado'::public.provider_status);
+USING (status IN ('pendiente'::public.provider_status, 'verificado'::public.provider_status));
 
 DROP POLICY IF EXISTS "providers_manage_own" ON public.providers;
 CREATE POLICY "providers_manage_own" ON public.providers
@@ -393,7 +394,7 @@ CREATE TRIGGER on_user_profiles_updated
 -- 8. SEED DATA
 -- ============================================================
 
--- Categories
+-- Categories (including Alimentación from later migration)
 INSERT INTO public.categories (id, name, slug, icon, description, sort_order) VALUES
   (gen_random_uuid(), 'Informática', 'informatica', '💻', 'Equipos, software y servicios tecnológicos', 1),
   (gen_random_uuid(), 'Bienestar', 'bienestar', '❤️', 'Salud, seguros y beneficios para empleados', 2),
@@ -401,7 +402,8 @@ INSERT INTO public.categories (id, name, slug, icon, description, sort_order) VA
   (gen_random_uuid(), 'Energía', 'energia', '⚡', 'Electricidad, gas y eficiencia energética', 4),
   (gen_random_uuid(), 'Limpieza', 'limpieza', '✨', 'Servicios de limpieza y mantenimiento', 5),
   (gen_random_uuid(), 'Telecomunicaciones', 'telecomunicaciones', '📱', 'Telefonía, internet y comunicaciones', 6),
-  (gen_random_uuid(), 'Logística', 'logistica', '🚛', 'Transporte, mensajería y almacenamiento', 7)
+  (gen_random_uuid(), 'Logística', 'logistica', '🚛', 'Transporte, mensajería y almacenamiento', 7),
+  (gen_random_uuid(), 'Alimentación', 'alimentacion', '🍽️', 'Catering, vending y suministros de alimentación para empresas', 8)
 ON CONFLICT (slug) DO NOTHING;
 
 -- Mock users (admin + sample client + sample provider)
@@ -421,7 +423,7 @@ BEGIN
   SELECT id INTO cat_bienestar_id FROM public.categories WHERE slug = 'bienestar' LIMIT 1;
   SELECT id INTO cat_mobiliario_id FROM public.categories WHERE slug = 'mobiliario' LIMIT 1;
 
-  -- Create auth users
+  -- Create auth users (trigger will auto-create user_profiles)
   INSERT INTO auth.users (
     id, instance_id, aud, role, email, encrypted_password, email_confirmed_at,
     created_at, updated_at, raw_user_meta_data, raw_app_meta_data,

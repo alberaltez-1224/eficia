@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import Icon from '@/components/ui/AppIcon';
 import { useAuth } from '@/contexts/AuthContext';
+import { createClient } from '@/lib/supabase/client';
 
 interface LoginFormData {
   email: string;
@@ -27,14 +28,14 @@ export default function LoginForm({ onRegister }: { onRegister?: () => void }) {
   } = useForm<LoginFormData>();
 
   const onSubmit = async (data: LoginFormData) => {
+    if (isLoading) return;
     setIsLoading(true);
     setAuthError(null);
+
     try {
       const result = await signIn(data.email, data.password);
-      // Use user from signIn result directly — avoids an extra getUser() API call
       const user = result?.user;
       if (user) {
-        const { createClient } = await import('@/lib/supabase/client');
         const supabase = createClient();
         const { data: profile } = await supabase
           .from('user_profiles')
@@ -49,11 +50,16 @@ export default function LoginForm({ onRegister }: { onRegister?: () => void }) {
         } else {
           router.push('/client-dashboard');
         }
-        router.refresh();
       }
     } catch (error: any) {
-      setAuthError(error.message === 'Invalid login credentials' ?'Email o contraseña incorrectos' : error.message ||'Error al iniciar sesión');
-    } finally {
+      const msg: string = error?.message || '';
+      let displayError: string;
+      if (msg === 'Invalid login credentials') {
+        displayError = 'Email o contraseña incorrectos';
+      } else {
+        displayError = msg || 'Error al iniciar sesión';
+      }
+      setAuthError(displayError);
       setIsLoading(false);
     }
   };

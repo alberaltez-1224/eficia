@@ -2,6 +2,7 @@ import React from 'react';
 import type { Metadata, Viewport } from 'next';
 import '../styles/tailwind.css';
 import { AuthProvider } from '@/contexts/AuthContext';
+import SchemaInit from '@/components/SchemaInit';
 
 export const viewport: Viewport = {
   width: 'device-width',
@@ -23,6 +24,7 @@ export default function RootLayout({
     <html lang="es">
       <body>
         <AuthProvider>
+          <SchemaInit />
           {children}
         </AuthProvider>
 

@@ -1,9 +1,8 @@
--- Eficia Platform - Complete Schema Migration
--- Tables: user_profiles, companies, providers, categories, leads, savings, reviews
+import { NextResponse } from 'next/server';
+import { Client } from 'pg';
 
--- ============================================================
--- 1. TYPES
--- ============================================================
+// Full Eficia schema SQL — idempotent, safe to run multiple times
+const SCHEMA_SQL = `
 DROP TYPE IF EXISTS public.user_role CASCADE;
 CREATE TYPE public.user_role AS ENUM ('cliente', 'proveedor', 'admin');
 
@@ -13,11 +12,6 @@ CREATE TYPE public.lead_status AS ENUM ('nuevo', 'en_proceso', 'respondido', 'ce
 DROP TYPE IF EXISTS public.provider_status CASCADE;
 CREATE TYPE public.provider_status AS ENUM ('pendiente', 'verificado', 'rechazado', 'suspendido');
 
--- ============================================================
--- 2. CORE TABLES
--- ============================================================
-
--- User profiles (linked to auth.users via trigger)
 CREATE TABLE IF NOT EXISTS public.user_profiles (
   id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
   email TEXT NOT NULL UNIQUE,
@@ -30,7 +24,6 @@ CREATE TABLE IF NOT EXISTS public.user_profiles (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
--- Categories
 CREATE TABLE IF NOT EXISTS public.categories (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   name TEXT NOT NULL UNIQUE,
@@ -42,7 +35,6 @@ CREATE TABLE IF NOT EXISTS public.categories (
   created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
--- Companies (empresa cliente)
 CREATE TABLE IF NOT EXISTS public.companies (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID NOT NULL REFERENCES public.user_profiles(id) ON DELETE CASCADE,
@@ -58,7 +50,6 @@ CREATE TABLE IF NOT EXISTS public.companies (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
--- Providers (empresa proveedora)
 CREATE TABLE IF NOT EXISTS public.providers (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID NOT NULL REFERENCES public.user_profiles(id) ON DELETE CASCADE,
@@ -78,7 +69,6 @@ CREATE TABLE IF NOT EXISTS public.providers (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
--- Provider categories junction
 CREATE TABLE IF NOT EXISTS public.provider_categories (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   provider_id UUID NOT NULL REFERENCES public.providers(id) ON DELETE CASCADE,
@@ -87,11 +77,10 @@ CREATE TABLE IF NOT EXISTS public.provider_categories (
   UNIQUE(provider_id, category_id)
 );
 
--- Savings analyses
 CREATE TABLE IF NOT EXISTS public.savings (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   company_id UUID NOT NULL REFERENCES public.companies(id) ON DELETE CASCADE,
-  category_id UUID NOT NULL REFERENCES public.categories(id) ON DELETE SET NULL,
+  category_id UUID REFERENCES public.categories(id) ON DELETE SET NULL,
   employees TEXT,
   annual_spend NUMERIC,
   estimated_saving_min NUMERIC,
@@ -100,7 +89,6 @@ CREATE TABLE IF NOT EXISTS public.savings (
   created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
--- Leads (contact requests from clients to providers)
 CREATE TABLE IF NOT EXISTS public.leads (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   company_id UUID NOT NULL REFERENCES public.companies(id) ON DELETE CASCADE,
@@ -112,7 +100,6 @@ CREATE TABLE IF NOT EXISTS public.leads (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
--- Reviews
 CREATE TABLE IF NOT EXISTS public.reviews (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   company_id UUID NOT NULL REFERENCES public.companies(id) ON DELETE CASCADE,
@@ -123,9 +110,6 @@ CREATE TABLE IF NOT EXISTS public.reviews (
   UNIQUE(company_id, provider_id)
 );
 
--- ============================================================
--- 3. INDEXES
--- ============================================================
 CREATE INDEX IF NOT EXISTS idx_user_profiles_role ON public.user_profiles(role);
 CREATE INDEX IF NOT EXISTS idx_companies_user_id ON public.companies(user_id);
 CREATE INDEX IF NOT EXISTS idx_providers_user_id ON public.providers(user_id);
@@ -137,66 +121,33 @@ CREATE INDEX IF NOT EXISTS idx_leads_provider_id ON public.leads(provider_id);
 CREATE INDEX IF NOT EXISTS idx_leads_status ON public.leads(status);
 CREATE INDEX IF NOT EXISTS idx_savings_company_id ON public.savings(company_id);
 
--- ============================================================
--- 4. FUNCTIONS
--- ============================================================
-
--- Auto-create user_profile on signup
 CREATE OR REPLACE FUNCTION public.handle_new_user()
-RETURNS TRIGGER
-LANGUAGE plpgsql
-SECURITY DEFINER
-AS $$
+RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER AS $$
 BEGIN
   INSERT INTO public.user_profiles (id, email, full_name, role)
   VALUES (
-    NEW.id,
-    NEW.email,
+    NEW.id, NEW.email,
     COALESCE(NEW.raw_user_meta_data->>'full_name', split_part(NEW.email, '@', 1)),
     COALESCE(NEW.raw_user_meta_data->>'role', 'cliente')::public.user_role
-  )
-  ON CONFLICT (id) DO NOTHING;
+  ) ON CONFLICT (id) DO NOTHING;
   RETURN NEW;
-END;
-$$;
+END; $$;
 
--- Auto-update updated_at
 CREATE OR REPLACE FUNCTION public.handle_updated_at()
-RETURNS TRIGGER
-LANGUAGE plpgsql
-AS $$
-BEGIN
-  NEW.updated_at = CURRENT_TIMESTAMP;
-  RETURN NEW;
-END;
-$$;
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN NEW.updated_at = CURRENT_TIMESTAMP; RETURN NEW; END; $$;
 
--- Check if user is admin (uses auth metadata to avoid recursion)
 CREATE OR REPLACE FUNCTION public.is_admin()
-RETURNS BOOLEAN
-LANGUAGE sql
-STABLE
-SECURITY DEFINER
-AS $$
+RETURNS BOOLEAN LANGUAGE sql STABLE SECURITY DEFINER AS $$
 SELECT EXISTS (
-  SELECT 1 FROM public.user_profiles
-  WHERE id = auth.uid() AND role = 'admin'::public.user_role
-)
-$$;
+  SELECT 1 FROM auth.users WHERE id = auth.uid()
+  AND (raw_user_meta_data->>'role' = 'admin' OR raw_app_meta_data->>'role' = 'admin')
+) $$;
 
--- Get user role
 CREATE OR REPLACE FUNCTION public.get_user_role()
-RETURNS TEXT
-LANGUAGE sql
-STABLE
-SECURITY DEFINER
-AS $$
-SELECT role::TEXT FROM public.user_profiles WHERE id = auth.uid() LIMIT 1
-$$;
+RETURNS TEXT LANGUAGE sql STABLE SECURITY DEFINER AS $$
+SELECT role::TEXT FROM public.user_profiles WHERE id = auth.uid() LIMIT 1 $$;
 
--- ============================================================
--- 5. ENABLE RLS
--- ============================================================
 ALTER TABLE public.user_profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.categories ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.companies ENABLE ROW LEVEL SECURITY;
@@ -206,222 +157,87 @@ ALTER TABLE public.savings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.leads ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.reviews ENABLE ROW LEVEL SECURITY;
 
--- ============================================================
--- 6. RLS POLICIES
--- ============================================================
-
--- user_profiles
 DROP POLICY IF EXISTS "users_manage_own_profile" ON public.user_profiles;
-CREATE POLICY "users_manage_own_profile" ON public.user_profiles
-FOR ALL TO authenticated
-USING (id = auth.uid())
-WITH CHECK (id = auth.uid());
-
+CREATE POLICY "users_manage_own_profile" ON public.user_profiles FOR ALL TO authenticated USING (id = auth.uid()) WITH CHECK (id = auth.uid());
 DROP POLICY IF EXISTS "admin_manage_all_profiles" ON public.user_profiles;
-CREATE POLICY "admin_manage_all_profiles" ON public.user_profiles
-FOR ALL TO authenticated
-USING (public.is_admin())
-WITH CHECK (public.is_admin());
+CREATE POLICY "admin_manage_all_profiles" ON public.user_profiles FOR ALL TO authenticated USING (public.is_admin()) WITH CHECK (public.is_admin());
 
--- categories (public read, admin write)
 DROP POLICY IF EXISTS "public_read_categories" ON public.categories;
-CREATE POLICY "public_read_categories" ON public.categories
-FOR SELECT TO public
-USING (true);
-
+CREATE POLICY "public_read_categories" ON public.categories FOR SELECT TO public USING (true);
 DROP POLICY IF EXISTS "admin_manage_categories" ON public.categories;
-CREATE POLICY "admin_manage_categories" ON public.categories
-FOR ALL TO authenticated
-USING (public.is_admin())
-WITH CHECK (public.is_admin());
+CREATE POLICY "admin_manage_categories" ON public.categories FOR ALL TO authenticated USING (public.is_admin()) WITH CHECK (public.is_admin());
 
--- companies
 DROP POLICY IF EXISTS "users_manage_own_company" ON public.companies;
-CREATE POLICY "users_manage_own_company" ON public.companies
-FOR ALL TO authenticated
-USING (user_id = auth.uid())
-WITH CHECK (user_id = auth.uid());
-
+CREATE POLICY "users_manage_own_company" ON public.companies FOR ALL TO authenticated USING (user_id = auth.uid()) WITH CHECK (user_id = auth.uid());
 DROP POLICY IF EXISTS "admin_manage_all_companies" ON public.companies;
-CREATE POLICY "admin_manage_all_companies" ON public.companies
-FOR ALL TO authenticated
-USING (public.is_admin())
-WITH CHECK (public.is_admin());
+CREATE POLICY "admin_manage_all_companies" ON public.companies FOR ALL TO authenticated USING (public.is_admin()) WITH CHECK (public.is_admin());
 
--- providers (public read for verified, owner write, admin all)
 DROP POLICY IF EXISTS "public_read_verified_providers" ON public.providers;
-CREATE POLICY "public_read_verified_providers" ON public.providers
-FOR SELECT TO public
-USING (status = 'verificado'::public.provider_status);
-
+CREATE POLICY "public_read_verified_providers" ON public.providers FOR SELECT TO public USING (status IN ('pendiente'::public.provider_status, 'verificado'::public.provider_status));
 DROP POLICY IF EXISTS "providers_manage_own" ON public.providers;
-CREATE POLICY "providers_manage_own" ON public.providers
-FOR ALL TO authenticated
-USING (user_id = auth.uid())
-WITH CHECK (user_id = auth.uid());
-
+CREATE POLICY "providers_manage_own" ON public.providers FOR ALL TO authenticated USING (user_id = auth.uid()) WITH CHECK (user_id = auth.uid());
 DROP POLICY IF EXISTS "admin_manage_all_providers" ON public.providers;
-CREATE POLICY "admin_manage_all_providers" ON public.providers
-FOR ALL TO authenticated
-USING (public.is_admin())
-WITH CHECK (public.is_admin());
+CREATE POLICY "admin_manage_all_providers" ON public.providers FOR ALL TO authenticated USING (public.is_admin()) WITH CHECK (public.is_admin());
 
--- provider_categories
 DROP POLICY IF EXISTS "public_read_provider_categories" ON public.provider_categories;
-CREATE POLICY "public_read_provider_categories" ON public.provider_categories
-FOR SELECT TO public
-USING (true);
-
+CREATE POLICY "public_read_provider_categories" ON public.provider_categories FOR SELECT TO public USING (true);
 DROP POLICY IF EXISTS "providers_manage_own_categories" ON public.provider_categories;
-CREATE POLICY "providers_manage_own_categories" ON public.provider_categories
-FOR ALL TO authenticated
-USING (
-  provider_id IN (SELECT id FROM public.providers WHERE user_id = auth.uid())
-)
-WITH CHECK (
-  provider_id IN (SELECT id FROM public.providers WHERE user_id = auth.uid())
-);
-
+CREATE POLICY "providers_manage_own_categories" ON public.provider_categories FOR ALL TO authenticated USING (provider_id IN (SELECT id FROM public.providers WHERE user_id = auth.uid())) WITH CHECK (provider_id IN (SELECT id FROM public.providers WHERE user_id = auth.uid()));
 DROP POLICY IF EXISTS "admin_manage_provider_categories" ON public.provider_categories;
-CREATE POLICY "admin_manage_provider_categories" ON public.provider_categories
-FOR ALL TO authenticated
-USING (public.is_admin())
-WITH CHECK (public.is_admin());
+CREATE POLICY "admin_manage_provider_categories" ON public.provider_categories FOR ALL TO authenticated USING (public.is_admin()) WITH CHECK (public.is_admin());
 
--- savings
 DROP POLICY IF EXISTS "clients_manage_own_savings" ON public.savings;
-CREATE POLICY "clients_manage_own_savings" ON public.savings
-FOR ALL TO authenticated
-USING (
-  company_id IN (SELECT id FROM public.companies WHERE user_id = auth.uid())
-)
-WITH CHECK (
-  company_id IN (SELECT id FROM public.companies WHERE user_id = auth.uid())
-);
-
+CREATE POLICY "clients_manage_own_savings" ON public.savings FOR ALL TO authenticated USING (company_id IN (SELECT id FROM public.companies WHERE user_id = auth.uid())) WITH CHECK (company_id IN (SELECT id FROM public.companies WHERE user_id = auth.uid()));
 DROP POLICY IF EXISTS "admin_manage_all_savings" ON public.savings;
-CREATE POLICY "admin_manage_all_savings" ON public.savings
-FOR ALL TO authenticated
-USING (public.is_admin())
-WITH CHECK (public.is_admin());
+CREATE POLICY "admin_manage_all_savings" ON public.savings FOR ALL TO authenticated USING (public.is_admin()) WITH CHECK (public.is_admin());
 
--- leads
 DROP POLICY IF EXISTS "clients_manage_own_leads" ON public.leads;
-CREATE POLICY "clients_manage_own_leads" ON public.leads
-FOR ALL TO authenticated
-USING (
-  company_id IN (SELECT id FROM public.companies WHERE user_id = auth.uid())
-)
-WITH CHECK (
-  company_id IN (SELECT id FROM public.companies WHERE user_id = auth.uid())
-);
-
+CREATE POLICY "clients_manage_own_leads" ON public.leads FOR ALL TO authenticated USING (company_id IN (SELECT id FROM public.companies WHERE user_id = auth.uid())) WITH CHECK (company_id IN (SELECT id FROM public.companies WHERE user_id = auth.uid()));
 DROP POLICY IF EXISTS "providers_view_own_leads" ON public.leads;
-CREATE POLICY "providers_view_own_leads" ON public.leads
-FOR SELECT TO authenticated
-USING (
-  provider_id IN (SELECT id FROM public.providers WHERE user_id = auth.uid())
-);
-
+CREATE POLICY "providers_view_own_leads" ON public.leads FOR SELECT TO authenticated USING (provider_id IN (SELECT id FROM public.providers WHERE user_id = auth.uid()));
 DROP POLICY IF EXISTS "providers_update_own_leads" ON public.leads;
-CREATE POLICY "providers_update_own_leads" ON public.leads
-FOR UPDATE TO authenticated
-USING (
-  provider_id IN (SELECT id FROM public.providers WHERE user_id = auth.uid())
-)
-WITH CHECK (
-  provider_id IN (SELECT id FROM public.providers WHERE user_id = auth.uid())
-);
-
+CREATE POLICY "providers_update_own_leads" ON public.leads FOR UPDATE TO authenticated USING (provider_id IN (SELECT id FROM public.providers WHERE user_id = auth.uid())) WITH CHECK (provider_id IN (SELECT id FROM public.providers WHERE user_id = auth.uid()));
 DROP POLICY IF EXISTS "admin_manage_all_leads" ON public.leads;
-CREATE POLICY "admin_manage_all_leads" ON public.leads
-FOR ALL TO authenticated
-USING (public.is_admin())
-WITH CHECK (public.is_admin());
+CREATE POLICY "admin_manage_all_leads" ON public.leads FOR ALL TO authenticated USING (public.is_admin()) WITH CHECK (public.is_admin());
 
--- reviews
 DROP POLICY IF EXISTS "public_read_reviews" ON public.reviews;
-CREATE POLICY "public_read_reviews" ON public.reviews
-FOR SELECT TO public
-USING (true);
-
+CREATE POLICY "public_read_reviews" ON public.reviews FOR SELECT TO public USING (true);
 DROP POLICY IF EXISTS "clients_manage_own_reviews" ON public.reviews;
-CREATE POLICY "clients_manage_own_reviews" ON public.reviews
-FOR ALL TO authenticated
-USING (
-  company_id IN (SELECT id FROM public.companies WHERE user_id = auth.uid())
-)
-WITH CHECK (
-  company_id IN (SELECT id FROM public.companies WHERE user_id = auth.uid())
-);
-
+CREATE POLICY "clients_manage_own_reviews" ON public.reviews FOR ALL TO authenticated USING (company_id IN (SELECT id FROM public.companies WHERE user_id = auth.uid())) WITH CHECK (company_id IN (SELECT id FROM public.companies WHERE user_id = auth.uid()));
 DROP POLICY IF EXISTS "admin_manage_all_reviews" ON public.reviews;
-CREATE POLICY "admin_manage_all_reviews" ON public.reviews
-FOR ALL TO authenticated
-USING (public.is_admin())
-WITH CHECK (public.is_admin());
+CREATE POLICY "admin_manage_all_reviews" ON public.reviews FOR ALL TO authenticated USING (public.is_admin()) WITH CHECK (public.is_admin());
 
--- ============================================================
--- 7. TRIGGERS
--- ============================================================
 DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
-CREATE TRIGGER on_auth_user_created
-  AFTER INSERT ON auth.users
-  FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
-
+CREATE TRIGGER on_auth_user_created AFTER INSERT ON auth.users FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
 DROP TRIGGER IF EXISTS on_companies_updated ON public.companies;
-CREATE TRIGGER on_companies_updated
-  BEFORE UPDATE ON public.companies
-  FOR EACH ROW EXECUTE FUNCTION public.handle_updated_at();
-
+CREATE TRIGGER on_companies_updated BEFORE UPDATE ON public.companies FOR EACH ROW EXECUTE FUNCTION public.handle_updated_at();
 DROP TRIGGER IF EXISTS on_providers_updated ON public.providers;
-CREATE TRIGGER on_providers_updated
-  BEFORE UPDATE ON public.providers
-  FOR EACH ROW EXECUTE FUNCTION public.handle_updated_at();
-
+CREATE TRIGGER on_providers_updated BEFORE UPDATE ON public.providers FOR EACH ROW EXECUTE FUNCTION public.handle_updated_at();
 DROP TRIGGER IF EXISTS on_leads_updated ON public.leads;
-CREATE TRIGGER on_leads_updated
-  BEFORE UPDATE ON public.leads
-  FOR EACH ROW EXECUTE FUNCTION public.handle_updated_at();
-
+CREATE TRIGGER on_leads_updated BEFORE UPDATE ON public.leads FOR EACH ROW EXECUTE FUNCTION public.handle_updated_at();
 DROP TRIGGER IF EXISTS on_user_profiles_updated ON public.user_profiles;
-CREATE TRIGGER on_user_profiles_updated
-  BEFORE UPDATE ON public.user_profiles
-  FOR EACH ROW EXECUTE FUNCTION public.handle_updated_at();
+CREATE TRIGGER on_user_profiles_updated BEFORE UPDATE ON public.user_profiles FOR EACH ROW EXECUTE FUNCTION public.handle_updated_at();
 
--- ============================================================
--- 8. SEED DATA
--- ============================================================
-
--- Categories
 INSERT INTO public.categories (id, name, slug, icon, description, sort_order) VALUES
-  (gen_random_uuid(), 'Informática', 'informatica', '💻', 'Equipos, software y servicios tecnológicos', 1),
-  (gen_random_uuid(), 'Bienestar', 'bienestar', '❤️', 'Salud, seguros y beneficios para empleados', 2),
-  (gen_random_uuid(), 'Mobiliario', 'mobiliario', '🪑', 'Mobiliario de oficina y equipamiento', 3),
-  (gen_random_uuid(), 'Energía', 'energia', '⚡', 'Electricidad, gas y eficiencia energética', 4),
-  (gen_random_uuid(), 'Limpieza', 'limpieza', '✨', 'Servicios de limpieza y mantenimiento', 5),
+  (gen_random_uuid(), 'Informática',        'informatica',        '💻', 'Equipos, software y servicios tecnológicos', 1),
+  (gen_random_uuid(), 'Bienestar',          'bienestar',          '❤️', 'Salud, seguros y beneficios para empleados', 2),
+  (gen_random_uuid(), 'Mobiliario',         'mobiliario',         '🪑', 'Mobiliario de oficina y equipamiento', 3),
+  (gen_random_uuid(), 'Energía',            'energia',            '⚡', 'Electricidad, gas y eficiencia energética', 4),
+  (gen_random_uuid(), 'Limpieza',           'limpieza',           '✨', 'Servicios de limpieza y mantenimiento', 5),
   (gen_random_uuid(), 'Telecomunicaciones', 'telecomunicaciones', '📱', 'Telefonía, internet y comunicaciones', 6),
-  (gen_random_uuid(), 'Logística', 'logistica', '🚛', 'Transporte, mensajería y almacenamiento', 7)
+  (gen_random_uuid(), 'Logística',          'logistica',          '🚛', 'Transporte, mensajería y almacenamiento', 7),
+  (gen_random_uuid(), 'Alimentación',       'alimentacion',       '🍽️', 'Catering, vending y suministros de alimentación para empresas', 8)
 ON CONFLICT (slug) DO NOTHING;
 
--- Mock users (admin + sample client + sample provider)
 DO $$
 DECLARE
-  admin_uuid UUID := gen_random_uuid();
-  client_uuid UUID := gen_random_uuid();
+  admin_uuid    UUID := gen_random_uuid();
+  client_uuid   UUID := gen_random_uuid();
   provider_uuid UUID := gen_random_uuid();
-  company_uuid UUID := gen_random_uuid();
-  prov_record_uuid UUID := gen_random_uuid();
-  cat_informatica_id UUID;
-  cat_bienestar_id UUID;
-  cat_mobiliario_id UUID;
+  company_uuid  UUID := gen_random_uuid();
+  prov_rec_uuid UUID := gen_random_uuid();
+  cat_info_id   UUID;
 BEGIN
-  -- Get category IDs
-  SELECT id INTO cat_informatica_id FROM public.categories WHERE slug = 'informatica' LIMIT 1;
-  SELECT id INTO cat_bienestar_id FROM public.categories WHERE slug = 'bienestar' LIMIT 1;
-  SELECT id INTO cat_mobiliario_id FROM public.categories WHERE slug = 'mobiliario' LIMIT 1;
-
-  -- Create auth users
   INSERT INTO auth.users (
     id, instance_id, aud, role, email, encrypted_password, email_confirmed_at,
     created_at, updated_at, raw_user_meta_data, raw_app_meta_data,
@@ -448,45 +264,97 @@ BEGIN
      false, false, '', null, '', null, '', '', null, '', 0, '', null, null, '', '', null)
   ON CONFLICT (id) DO NOTHING;
 
-  -- Create company for client
   INSERT INTO public.companies (id, user_id, company_name, cif, contact_name, phone, employees, sector, location)
   VALUES (company_uuid, client_uuid, 'Acme Corporation S.L.', 'B12345678', 'Ana Martinez', '+34 91 234 56 78', '26-50', 'Tecnología', 'Madrid')
   ON CONFLICT (cif) DO NOTHING;
 
-  -- Create provider record for Vasyco
   INSERT INTO public.providers (id, user_id, company_name, cif, contact_name, phone, website, description, service_zones, client_type, estimated_savings, status, is_featured)
-  VALUES (prov_record_uuid, provider_uuid, 'Vasyco S.L.', 'B87654321', 'Carlos Ruiz', '+34 91 987 65 43', 'https://vasyco.com',
+  VALUES (prov_rec_uuid, provider_uuid, 'Vasyco S.L.', 'B87654321', 'Carlos Ruiz', '+34 91 987 65 43', 'https://vasyco.com',
     'Especialistas en equipos informaticos reacondicionados certificados. Reducimos el gasto tecnologico de las empresas entre un 30% y 60% sin perder rendimiento.',
     'Madrid, Barcelona, Nacional', 'Pymes (11-100)', '30% - 60%', 'verificado'::public.provider_status, true)
   ON CONFLICT (cif) DO NOTHING;
 
-  -- Link Vasyco to Informatica category
-  IF cat_informatica_id IS NOT NULL THEN
-    INSERT INTO public.provider_categories (provider_id, category_id)
-    VALUES (prov_record_uuid, cat_informatica_id)
-    ON CONFLICT (provider_id, category_id) DO NOTHING;
-  END IF;
-
-  -- Create a sample lead
-  IF cat_informatica_id IS NOT NULL THEN
+  SELECT id INTO cat_info_id FROM public.categories WHERE slug = 'informatica' LIMIT 1;
+  IF cat_info_id IS NOT NULL THEN
+    INSERT INTO public.provider_categories (provider_id, category_id) VALUES (prov_rec_uuid, cat_info_id) ON CONFLICT (provider_id, category_id) DO NOTHING;
     INSERT INTO public.leads (company_id, provider_id, category_id, message, status)
-    VALUES (company_uuid, prov_record_uuid, cat_informatica_id,
-      'Nos interesa conocer vuestra propuesta para renovar el parque informatico de nuestra empresa.',
-      'nuevo'::public.lead_status)
+    VALUES (company_uuid, prov_rec_uuid, cat_info_id, 'Nos interesa conocer vuestra propuesta para renovar el parque informatico de nuestra empresa.', 'nuevo'::public.lead_status)
     ON CONFLICT (id) DO NOTHING;
-  END IF;
-
-  -- Create a sample savings analysis
-  IF cat_informatica_id IS NOT NULL THEN
     INSERT INTO public.savings (company_id, category_id, employees, annual_spend, estimated_saving_min, estimated_saving_max, notes)
-    VALUES (company_uuid, cat_informatica_id, '26-50', 20000, 6000, 12000, 'Analisis de informatica - equipos y software')
+    VALUES (company_uuid, cat_info_id, '26-50', 20000, 6000, 12000, 'Analisis de informatica - equipos y software')
     ON CONFLICT (id) DO NOTHING;
   END IF;
-
-EXCEPTION
-  WHEN OTHERS THEN
-    RAISE NOTICE 'Seed data error: %', SQLERRM;
+EXCEPTION WHEN OTHERS THEN RAISE NOTICE 'Seed data error (non-fatal): %', SQLERRM;
 END $$;
+`;
 
--- SUPERSEDED: This migration has been consolidated into 20260415200000_eficia_complete.sql
--- This file is intentionally left as a no-op to preserve migration history ordering.
+function buildConnectionString(): string | null {
+  // Try explicit DB URL first
+  const dbUrl = process.env.SUPABASE_DB_URL || process.env.DATABASE_URL;
+  if (dbUrl) return dbUrl;
+
+  // Build from Supabase URL + password
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const dbPassword = process.env.SUPABASE_DB_PASSWORD;
+  if (!supabaseUrl || !dbPassword) return null;
+
+  const projectRef = supabaseUrl.match(/https:\/\/([^.]+)\.supabase\.co/)?.[1];
+  if (!projectRef) return null;
+
+  // Supabase direct connection (port 5432) — use pooler (port 6543) for serverless
+  return `postgresql://postgres.${projectRef}:${encodeURIComponent(dbPassword)}@aws-0-eu-west-3.pooler.supabase.com:6543/postgres`;
+}
+
+export async function POST() {
+  const connectionString = buildConnectionString();
+
+  if (!connectionString) {
+    return NextResponse.json(
+      {
+        error: 'Database connection not configured.',
+        hint: 'Add SUPABASE_DB_URL=postgresql://postgres:[password]@db.[ref].supabase.co:5432/postgres to your .env file. Find the password at: Supabase Dashboard → Project Settings → Database → Connection string',
+        envVarsNeeded: ['SUPABASE_DB_URL'],
+      },
+      { status: 500 }
+    );
+  }
+
+  const client = new Client({
+    connectionString,
+    ssl: { rejectUnauthorized: false },
+    connectionTimeoutMillis: 30000,
+    statement_timeout: 60000,
+  });
+
+  try {
+    await client.connect();
+    await client.query(SCHEMA_SQL);
+    await client.end();
+
+    return NextResponse.json({
+      success: true,
+      message: 'Eficia schema applied successfully',
+      tables: ['user_profiles', 'categories', 'companies', 'providers', 'provider_categories', 'savings', 'leads', 'reviews'],
+      seedUsers: [
+        { email: 'admin@eficia.es', password: 'Admin2026!', role: 'admin' },
+        { email: 'cliente@acmecorp.es', password: 'Eficia2026!', role: 'cliente' },
+        { email: 'hola@vasyco.com', password: 'Eficia2026!', role: 'proveedor' },
+      ],
+    });
+  } catch (err: unknown) {
+    try { await client.end(); } catch { /* ignore */ }
+    const message = err instanceof Error ? err.message : String(err);
+    return NextResponse.json(
+      { error: `Schema push failed: ${message}` },
+      { status: 500 }
+    );
+  }
+}
+
+export async function GET() {
+  return NextResponse.json({
+    status: 'Schema init endpoint ready',
+    usage: 'POST /api/init-schema to apply the full Eficia schema',
+    requiredEnv: 'SUPABASE_DB_URL or (SUPABASE_DB_PASSWORD + NEXT_PUBLIC_SUPABASE_URL)',
+  });
+}
