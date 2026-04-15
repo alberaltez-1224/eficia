@@ -56,11 +56,27 @@ export default function LoginForm({ onRegister }: { onRegister?: () => void }) {
         }
       }
     } catch (error: any) {
-      setAuthError(
-        error.message === 'Invalid login credentials' ?'Email o contraseña incorrectos' : error.message ||'Error al iniciar sesión'
-      );
-      submittingRef.current = false;
-      setIsLoading(false);
+      const msg: string = error?.message || '';
+      let displayError: string;
+
+      if (msg.toLowerCase().includes('rate limit') || msg.toLowerCase().includes('too many')) {
+        displayError = 'Demasiados intentos. Por favor espera unos segundos e inténtalo de nuevo.';
+        // Auto-unlock after 10 seconds for rate limit errors
+        setTimeout(() => {
+          submittingRef.current = false;
+          setIsLoading(false);
+        }, 10_000);
+      } else if (msg === 'Invalid login credentials') {
+        displayError = 'Email o contraseña incorrectos';
+        submittingRef.current = false;
+        setIsLoading(false);
+      } else {
+        displayError = msg || 'Error al iniciar sesión';
+        submittingRef.current = false;
+        setIsLoading(false);
+      }
+
+      setAuthError(displayError);
     }
   };
 

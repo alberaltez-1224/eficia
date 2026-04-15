@@ -26,9 +26,11 @@ export const useAuth = () => {
 
 // ---------------------------------------------------------------------------
 // Module-level singleton — ONE subscription for the entire browser session.
-// Prevents duplicate listeners from React Strict Mode double-mount / HMR.
+// _initPromise prevents the race condition where getSession() fires twice
+// before _sub is set (React Strict Mode double-mount).
 // ---------------------------------------------------------------------------
 let _sub: { unsubscribe: () => void } | null = null;
+let _initPromise: Promise<void> | null = null;
 let _session: any = null;
 let _user: any = null;
 let _ready = false;
@@ -38,45 +40,55 @@ function notify() {
   _listeners.forEach((fn) => fn());
 }
 
-function ensureSubscription() {
-  if (_sub) return; // already subscribed
+function ensureSubscription(): Promise<void> {
+  // Return existing promise if already initializing or initialized
+  if (_initPromise) return _initPromise;
 
-  const supabase = createClient();
+  _initPromise = new Promise<void>((resolve) => {
+    const supabase = createClient();
 
-  // getSession() reads from local storage — ZERO network calls
-  supabase.auth.getSession().then(({ data: { session } }) => {
-    _session = session ?? null;
-    _user = session?.user ?? null;
-    _ready = true;
-    notify();
-  }).catch(() => {
-    _session = null;
-    _user = null;
-    _ready = true;
-    notify();
-  });
-
-  // onAuthStateChange fires for SIGNED_IN, SIGNED_OUT, TOKEN_REFRESHED, etc.
-  // It does NOT make extra API calls on its own — it reacts to Supabase SDK events.
-  const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-    if (event === 'SIGNED_OUT' || (event === 'TOKEN_REFRESHED' && !session)) {
-      if (event === 'TOKEN_REFRESHED' && !session) {
-        clearStaleAuthTokens();
-      }
+    // getSession() reads from local storage — minimal network calls
+    // Only hits network if token needs refresh
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      _session = session ?? null;
+      _user = session?.user ?? null;
+      _ready = true;
+      notify();
+      resolve();
+    }).catch(() => {
       _session = null;
       _user = null;
       _ready = true;
       notify();
-      return;
-    }
+      resolve();
+    });
 
-    _session = session ?? null;
-    _user = session?.user ?? null;
-    _ready = true;
-    notify();
+    // Guard: only create subscription once
+    if (_sub) return;
+
+    // onAuthStateChange fires for SIGNED_IN, SIGNED_OUT, TOKEN_REFRESHED, etc.
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'SIGNED_OUT' || (event === 'TOKEN_REFRESHED' && !session)) {
+        if (event === 'TOKEN_REFRESHED' && !session) {
+          clearStaleAuthTokens();
+        }
+        _session = null;
+        _user = null;
+        _ready = true;
+        notify();
+        return;
+      }
+
+      _session = session ?? null;
+      _user = session?.user ?? null;
+      _ready = true;
+      notify();
+    });
+
+    _sub = subscription;
   });
 
-  _sub = subscription;
+  return _initPromise;
 }
 
 export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
@@ -88,8 +100,6 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   useEffect(() => {
     mountedRef.current = true;
 
-    ensureSubscription();
-
     const sync = () => {
       if (!mountedRef.current) return;
       setSession(_session);
@@ -97,12 +107,17 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       setLoading(false);
     };
 
-    // If already ready, sync immediately
+    // If already ready, sync immediately without waiting
     if (_ready) {
       sync();
     }
 
     _listeners.add(sync);
+
+    // ensureSubscription returns a promise — safe to call multiple times
+    ensureSubscription().then(() => {
+      if (mountedRef.current) sync();
+    });
 
     return () => {
       mountedRef.current = false;
@@ -144,10 +159,14 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     _session = null;
     _user = null;
     _ready = true;
+    // Reset init promise so next login starts fresh
+    _initPromise = null;
+    _sub = null;
     notify();
     clearStaleAuthTokens();
     try {
-      await supabase.auth.signOut();
+      const supabaseClient = createClient();
+      await supabaseClient.auth.signOut();
     } catch {
       // Ignore errors — local state is already cleared
     }
