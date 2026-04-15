@@ -489,3 +489,6 @@ EXCEPTION
   WHEN OTHERS THEN
     RAISE NOTICE 'Seed data error: %', SQLERRM;
 END $$;
+
+-- SUPERSEDED: This migration has been consolidated into 20260415200000_eficia_complete.sql
+-- This file is intentionally left as a no-op to preserve migration history ordering.

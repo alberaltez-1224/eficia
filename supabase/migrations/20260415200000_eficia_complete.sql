@@ -1,8 +1,10 @@
--- Eficia Platform - Complete Schema Migration
--- Tables: user_profiles, companies, providers, categories, leads, savings, reviews
+-- ============================================================
+-- Eficia Platform - Complete Schema (Consolidated)
+-- Single authoritative migration for fresh Supabase projects
+-- ============================================================
 
 -- ============================================================
--- 1. TYPES
+-- 1. TYPES (idempotent: DROP IF EXISTS before CREATE)
 -- ============================================================
 DROP TYPE IF EXISTS public.user_role CASCADE;
 CREATE TYPE public.user_role AS ENUM ('cliente', 'proveedor', 'admin');
@@ -91,7 +93,7 @@ CREATE TABLE IF NOT EXISTS public.provider_categories (
 CREATE TABLE IF NOT EXISTS public.savings (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   company_id UUID NOT NULL REFERENCES public.companies(id) ON DELETE CASCADE,
-  category_id UUID NOT NULL REFERENCES public.categories(id) ON DELETE SET NULL,
+  category_id UUID REFERENCES public.categories(id) ON DELETE SET NULL,
   employees TEXT,
   annual_spend NUMERIC,
   estimated_saving_min NUMERIC,
@@ -138,7 +140,7 @@ CREATE INDEX IF NOT EXISTS idx_leads_status ON public.leads(status);
 CREATE INDEX IF NOT EXISTS idx_savings_company_id ON public.savings(company_id);
 
 -- ============================================================
--- 4. FUNCTIONS
+-- 4. FUNCTIONS (MUST be before RLS policies that reference them)
 -- ============================================================
 
 -- Auto-create user_profile on signup
@@ -171,7 +173,7 @@ BEGIN
 END;
 $$;
 
--- Check if user is admin (uses auth metadata to avoid recursion)
+-- Check if user is admin (reads from auth.users metadata to avoid RLS recursion on user_profiles)
 CREATE OR REPLACE FUNCTION public.is_admin()
 RETURNS BOOLEAN
 LANGUAGE sql
@@ -179,8 +181,12 @@ STABLE
 SECURITY DEFINER
 AS $$
 SELECT EXISTS (
-  SELECT 1 FROM public.user_profiles
-  WHERE id = auth.uid() AND role = 'admin'::public.user_role
+  SELECT 1 FROM auth.users
+  WHERE id = auth.uid()
+    AND (
+      raw_user_meta_data->>'role' = 'admin'
+      OR raw_app_meta_data->>'role' = 'admin'
+    )
 )
 $$;
 
@@ -210,7 +216,7 @@ ALTER TABLE public.reviews ENABLE ROW LEVEL SECURITY;
 -- 6. RLS POLICIES
 -- ============================================================
 
--- user_profiles
+-- user_profiles: own row access + admin access (no recursion: is_admin uses auth.users)
 DROP POLICY IF EXISTS "users_manage_own_profile" ON public.user_profiles;
 CREATE POLICY "users_manage_own_profile" ON public.user_profiles
 FOR ALL TO authenticated
@@ -223,7 +229,7 @@ FOR ALL TO authenticated
 USING (public.is_admin())
 WITH CHECK (public.is_admin());
 
--- categories (public read, admin write)
+-- categories: public read, admin write
 DROP POLICY IF EXISTS "public_read_categories" ON public.categories;
 CREATE POLICY "public_read_categories" ON public.categories
 FOR SELECT TO public
@@ -235,7 +241,7 @@ FOR ALL TO authenticated
 USING (public.is_admin())
 WITH CHECK (public.is_admin());
 
--- companies
+-- companies: owner access + admin access
 DROP POLICY IF EXISTS "users_manage_own_company" ON public.companies;
 CREATE POLICY "users_manage_own_company" ON public.companies
 FOR ALL TO authenticated
@@ -248,11 +254,11 @@ FOR ALL TO authenticated
 USING (public.is_admin())
 WITH CHECK (public.is_admin());
 
--- providers (public read for verified, owner write, admin all)
+-- providers: public read (pendiente + verificado), owner write, admin all
 DROP POLICY IF EXISTS "public_read_verified_providers" ON public.providers;
 CREATE POLICY "public_read_verified_providers" ON public.providers
 FOR SELECT TO public
-USING (status = 'verificado'::public.provider_status);
+USING (status IN ('pendiente'::public.provider_status, 'verificado'::public.provider_status));
 
 DROP POLICY IF EXISTS "providers_manage_own" ON public.providers;
 CREATE POLICY "providers_manage_own" ON public.providers
@@ -266,7 +272,7 @@ FOR ALL TO authenticated
 USING (public.is_admin())
 WITH CHECK (public.is_admin());
 
--- provider_categories
+-- provider_categories: public read, provider owner write, admin all
 DROP POLICY IF EXISTS "public_read_provider_categories" ON public.provider_categories;
 CREATE POLICY "public_read_provider_categories" ON public.provider_categories
 FOR SELECT TO public
@@ -288,7 +294,7 @@ FOR ALL TO authenticated
 USING (public.is_admin())
 WITH CHECK (public.is_admin());
 
--- savings
+-- savings: client (via company) access + admin all
 DROP POLICY IF EXISTS "clients_manage_own_savings" ON public.savings;
 CREATE POLICY "clients_manage_own_savings" ON public.savings
 FOR ALL TO authenticated
@@ -305,7 +311,7 @@ FOR ALL TO authenticated
 USING (public.is_admin())
 WITH CHECK (public.is_admin());
 
--- leads
+-- leads: client write, provider read/update, admin all
 DROP POLICY IF EXISTS "clients_manage_own_leads" ON public.leads;
 CREATE POLICY "clients_manage_own_leads" ON public.leads
 FOR ALL TO authenticated
@@ -339,7 +345,7 @@ FOR ALL TO authenticated
 USING (public.is_admin())
 WITH CHECK (public.is_admin());
 
--- reviews
+-- reviews: public read, client write, admin all
 DROP POLICY IF EXISTS "public_read_reviews" ON public.reviews;
 CREATE POLICY "public_read_reviews" ON public.reviews
 FOR SELECT TO public
@@ -395,33 +401,28 @@ CREATE TRIGGER on_user_profiles_updated
 
 -- Categories
 INSERT INTO public.categories (id, name, slug, icon, description, sort_order) VALUES
-  (gen_random_uuid(), 'Informática', 'informatica', '💻', 'Equipos, software y servicios tecnológicos', 1),
-  (gen_random_uuid(), 'Bienestar', 'bienestar', '❤️', 'Salud, seguros y beneficios para empleados', 2),
-  (gen_random_uuid(), 'Mobiliario', 'mobiliario', '🪑', 'Mobiliario de oficina y equipamiento', 3),
-  (gen_random_uuid(), 'Energía', 'energia', '⚡', 'Electricidad, gas y eficiencia energética', 4),
-  (gen_random_uuid(), 'Limpieza', 'limpieza', '✨', 'Servicios de limpieza y mantenimiento', 5),
-  (gen_random_uuid(), 'Telecomunicaciones', 'telecomunicaciones', '📱', 'Telefonía, internet y comunicaciones', 6),
-  (gen_random_uuid(), 'Logística', 'logistica', '🚛', 'Transporte, mensajería y almacenamiento', 7)
+  (gen_random_uuid(), 'Informática',        'informatica',        '💻', 'Equipos, software y servicios tecnológicos',                        1),
+  (gen_random_uuid(), 'Bienestar',          'bienestar',          '❤️', 'Salud, seguros y beneficios para empleados',                        2),
+  (gen_random_uuid(), 'Mobiliario',         'mobiliario',         '🪑', 'Mobiliario de oficina y equipamiento',                              3),
+  (gen_random_uuid(), 'Energía',            'energia',            '⚡', 'Electricidad, gas y eficiencia energética',                         4),
+  (gen_random_uuid(), 'Limpieza',           'limpieza',           '✨', 'Servicios de limpieza y mantenimiento',                             5),
+  (gen_random_uuid(), 'Telecomunicaciones', 'telecomunicaciones', '📱', 'Telefonía, internet y comunicaciones',                              6),
+  (gen_random_uuid(), 'Logística',          'logistica',          '🚛', 'Transporte, mensajería y almacenamiento',                           7),
+  (gen_random_uuid(), 'Alimentación',       'alimentacion',       '🍽️', 'Catering, vending y suministros de alimentación para empresas',     8)
 ON CONFLICT (slug) DO NOTHING;
 
--- Mock users (admin + sample client + sample provider)
+-- Mock users: admin + sample client + sample provider
+-- Trigger handle_new_user auto-creates user_profiles rows on auth.users INSERT
 DO $$
 DECLARE
-  admin_uuid UUID := gen_random_uuid();
-  client_uuid UUID := gen_random_uuid();
-  provider_uuid UUID := gen_random_uuid();
-  company_uuid UUID := gen_random_uuid();
-  prov_record_uuid UUID := gen_random_uuid();
-  cat_informatica_id UUID;
-  cat_bienestar_id UUID;
-  cat_mobiliario_id UUID;
+  admin_uuid      UUID := gen_random_uuid();
+  client_uuid     UUID := gen_random_uuid();
+  provider_uuid   UUID := gen_random_uuid();
+  company_uuid    UUID := gen_random_uuid();
+  prov_rec_uuid   UUID := gen_random_uuid();
+  cat_info_id     UUID;
 BEGIN
-  -- Get category IDs
-  SELECT id INTO cat_informatica_id FROM public.categories WHERE slug = 'informatica' LIMIT 1;
-  SELECT id INTO cat_bienestar_id FROM public.categories WHERE slug = 'bienestar' LIMIT 1;
-  SELECT id INTO cat_mobiliario_id FROM public.categories WHERE slug = 'mobiliario' LIMIT 1;
-
-  -- Create auth users
+  -- Auth users (trigger creates user_profiles automatically)
   INSERT INTO auth.users (
     id, instance_id, aud, role, email, encrypted_password, email_confirmed_at,
     created_at, updated_at, raw_user_meta_data, raw_app_meta_data,
@@ -431,62 +432,67 @@ BEGIN
     reauthentication_token, reauthentication_sent_at, phone, phone_change,
     phone_change_token, phone_change_sent_at
   ) VALUES
-    (admin_uuid, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
+    (admin_uuid,
+     '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
      'admin@eficia.es', crypt('Admin2026!', gen_salt('bf', 10)), now(), now(), now(),
      jsonb_build_object('full_name', 'Admin Eficia', 'role', 'admin'),
      jsonb_build_object('provider', 'email', 'providers', ARRAY['email']::TEXT[]),
      false, false, '', null, '', null, '', '', null, '', 0, '', null, null, '', '', null),
-    (client_uuid, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
+    (client_uuid,
+     '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
      'cliente@acmecorp.es', crypt('Eficia2026!', gen_salt('bf', 10)), now(), now(), now(),
      jsonb_build_object('full_name', 'Ana Martinez', 'role', 'cliente'),
      jsonb_build_object('provider', 'email', 'providers', ARRAY['email']::TEXT[]),
      false, false, '', null, '', null, '', '', null, '', 0, '', null, null, '', '', null),
-    (provider_uuid, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
+    (provider_uuid,
+     '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
      'hola@vasyco.com', crypt('Eficia2026!', gen_salt('bf', 10)), now(), now(), now(),
      jsonb_build_object('full_name', 'Carlos Ruiz', 'role', 'proveedor'),
      jsonb_build_object('provider', 'email', 'providers', ARRAY['email']::TEXT[]),
      false, false, '', null, '', null, '', '', null, '', 0, '', null, null, '', '', null)
   ON CONFLICT (id) DO NOTHING;
 
-  -- Create company for client
+  -- Company for client
   INSERT INTO public.companies (id, user_id, company_name, cif, contact_name, phone, employees, sector, location)
-  VALUES (company_uuid, client_uuid, 'Acme Corporation S.L.', 'B12345678', 'Ana Martinez', '+34 91 234 56 78', '26-50', 'Tecnología', 'Madrid')
+  VALUES (company_uuid, client_uuid, 'Acme Corporation S.L.', 'B12345678', 'Ana Martinez',
+          '+34 91 234 56 78', '26-50', 'Tecnología', 'Madrid')
   ON CONFLICT (cif) DO NOTHING;
 
-  -- Create provider record for Vasyco
-  INSERT INTO public.providers (id, user_id, company_name, cif, contact_name, phone, website, description, service_zones, client_type, estimated_savings, status, is_featured)
-  VALUES (prov_record_uuid, provider_uuid, 'Vasyco S.L.', 'B87654321', 'Carlos Ruiz', '+34 91 987 65 43', 'https://vasyco.com',
+  -- Provider record for Vasyco
+  INSERT INTO public.providers (id, user_id, company_name, cif, contact_name, phone, website,
+    description, service_zones, client_type, estimated_savings, status, is_featured)
+  VALUES (prov_rec_uuid, provider_uuid, 'Vasyco S.L.', 'B87654321', 'Carlos Ruiz',
+    '+34 91 987 65 43', 'https://vasyco.com',
     'Especialistas en equipos informaticos reacondicionados certificados. Reducimos el gasto tecnologico de las empresas entre un 30% y 60% sin perder rendimiento.',
-    'Madrid, Barcelona, Nacional', 'Pymes (11-100)', '30% - 60%', 'verificado'::public.provider_status, true)
+    'Madrid, Barcelona, Nacional', 'Pymes (11-100)', '30% - 60%',
+    'verificado'::public.provider_status, true)
   ON CONFLICT (cif) DO NOTHING;
 
-  -- Link Vasyco to Informatica category
-  IF cat_informatica_id IS NOT NULL THEN
-    INSERT INTO public.provider_categories (provider_id, category_id)
-    VALUES (prov_record_uuid, cat_informatica_id)
-    ON CONFLICT (provider_id, category_id) DO NOTHING;
-  END IF;
+  -- Get Informatica category id
+  SELECT id INTO cat_info_id FROM public.categories WHERE slug = 'informatica' LIMIT 1;
 
-  -- Create a sample lead
-  IF cat_informatica_id IS NOT NULL THEN
+  IF cat_info_id IS NOT NULL THEN
+    -- Link Vasyco to Informatica
+    INSERT INTO public.provider_categories (provider_id, category_id)
+    VALUES (prov_rec_uuid, cat_info_id)
+    ON CONFLICT (provider_id, category_id) DO NOTHING;
+
+    -- Sample lead
     INSERT INTO public.leads (company_id, provider_id, category_id, message, status)
-    VALUES (company_uuid, prov_record_uuid, cat_informatica_id,
+    VALUES (company_uuid, prov_rec_uuid, cat_info_id,
       'Nos interesa conocer vuestra propuesta para renovar el parque informatico de nuestra empresa.',
       'nuevo'::public.lead_status)
     ON CONFLICT (id) DO NOTHING;
-  END IF;
 
-  -- Create a sample savings analysis
-  IF cat_informatica_id IS NOT NULL THEN
-    INSERT INTO public.savings (company_id, category_id, employees, annual_spend, estimated_saving_min, estimated_saving_max, notes)
-    VALUES (company_uuid, cat_informatica_id, '26-50', 20000, 6000, 12000, 'Analisis de informatica - equipos y software')
+    -- Sample savings analysis
+    INSERT INTO public.savings (company_id, category_id, employees, annual_spend,
+      estimated_saving_min, estimated_saving_max, notes)
+    VALUES (company_uuid, cat_info_id, '26-50', 20000, 6000, 12000,
+      'Analisis de informatica - equipos y software')
     ON CONFLICT (id) DO NOTHING;
   END IF;
 
 EXCEPTION
   WHEN OTHERS THEN
-    RAISE NOTICE 'Seed data error: %', SQLERRM;
+    RAISE NOTICE 'Seed data error (non-fatal): %', SQLERRM;
 END $$;
-
--- SUPERSEDED: This migration has been consolidated into 20260415200000_eficia_complete.sql
--- This file is intentionally left as a no-op to preserve migration history ordering.
