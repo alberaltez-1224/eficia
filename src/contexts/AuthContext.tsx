@@ -1,6 +1,6 @@
 'use client';
 
-import { createContext, useContext, useEffect, useRef, useState } from 'react';
+import { createContext, useContext, useEffect, useState } from 'react';
 import { createClient, clearStaleAuthTokens } from '@/lib/supabase/client';
 
 const AuthContext = createContext<any>({});
@@ -13,62 +13,87 @@ export const useAuth = () => {
   return context;
 };
 
+// ---------------------------------------------------------------------------
+// Module-level singleton — the subscription is created ONCE per browser session
+// regardless of how many times AuthProvider mounts/unmounts (React Strict Mode,
+// HMR, etc.).  This prevents two competing onAuthStateChange listeners from
+// fighting over the same IndexedDB/localStorage lock and throwing:
+//   "AbortError: Lock broken by another request with the 'steal' option."
+// ---------------------------------------------------------------------------
+let _initialized = false;
+let _session: any = null;
+let _user: any = null;
+let _listeners: Set<() => void> = new Set();
+
+function notifyListeners() {
+  _listeners.forEach((fn) => fn());
+}
+
+function initAuthSingleton() {
+  if (_initialized) return;
+  _initialized = true;
+
+  const supabase = createClient();
+
+  // Seed initial state from local storage — zero network calls
+  supabase.auth.getSession().then(({ data: { session } }) => {
+    _session = session;
+    _user = session?.user ?? null;
+    notifyListeners();
+  }).catch(() => {
+    notifyListeners();
+  });
+
+  supabase.auth.onAuthStateChange((event, session) => {
+    if (event === 'TOKEN_REFRESHED' && !session) {
+      clearStaleAuthTokens();
+      _session = null;
+      _user = null;
+      notifyListeners();
+      return;
+    }
+
+    if (event === 'SIGNED_OUT') {
+      _session = null;
+      _user = null;
+      notifyListeners();
+      return;
+    }
+
+    _session = session;
+    _user = session?.user ?? null;
+    notifyListeners();
+  });
+}
+
 export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
-  const [user, setUser] = useState<any>(null);
-  const [session, setSession] = useState<any>(null);
-  const [loading, setLoading] = useState(true);
-  const supabaseRef = useRef(createClient());
-  const supabase = supabaseRef.current;
+  const [user, setUser] = useState<any>(_user);
+  const [session, setSession] = useState<any>(_session);
+  const [loading, setLoading] = useState(!_initialized);
 
   useEffect(() => {
-    let mounted = true;
+    // Ensure the singleton is running
+    initAuthSingleton();
 
-    // Use getSession() first — reads from local storage, makes NO API call
-    // This avoids triggering a getUser() network request on every page load
-    supabase.auth.getSession().then(({ data: { session: initialSession } }) => {
-      if (!mounted) return;
-      setSession(initialSession);
-      setUser(initialSession?.user ?? null);
+    // Sync component state with the singleton
+    const sync = () => {
+      setSession(_session);
+      setUser(_user);
       setLoading(false);
-    }).catch(() => {
-      if (mounted) setLoading(false);
-    });
+    };
 
-    const {
-      data: { subscription }
-    } = supabase.auth.onAuthStateChange((event, session) => {
-      if (!mounted) return;
+    // If already initialized, sync immediately
+    if (_initialized && _session !== undefined) {
+      sync();
+    }
 
-      // Handle token refresh failure — clear stale tokens but avoid extra API calls
-      if (event === 'TOKEN_REFRESHED' && !session) {
-        clearStaleAuthTokens();
-        // Update state directly without calling signOut() (which makes an API call)
-        if (mounted) {
-          setSession(null);
-          setUser(null);
-          setLoading(false);
-        }
-        return;
-      }
-
-      // Handle explicit sign-out
-      if (event === 'SIGNED_OUT') {
-        setSession(null);
-        setUser(null);
-        setLoading(false);
-        return;
-      }
-
-      setSession(session);
-      setUser(session?.user ?? null);
-      setLoading(false);
-    });
-
+    _listeners.add(sync);
     return () => {
-      mounted = false;
-      subscription.unsubscribe();
+      _listeners.delete(sync);
     };
   }, []);
+
+  const supabase = createClient();
 
   // Email/Password Sign Up
   const signUp = async (email: string, password: string, metadata: any = {}) => {
