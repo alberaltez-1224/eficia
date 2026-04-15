@@ -49,6 +49,18 @@ function initAuth() {
     _ready = true;
     notify();
   });
+
+  // Attempt to get the current session; if the Supabase project is unreachable
+  // (e.g. "Failed to fetch" during token refresh), mark auth as ready with no
+  // session so the app doesn't hang in a loading state.
+  supabase.auth.getSession().catch(() => {
+    if (!_ready) {
+      _session = null;
+      _user = null;
+      _ready = true;
+      notify();
+    }
+  });
 }
 
 export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
