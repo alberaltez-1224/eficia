@@ -76,11 +76,13 @@ export async function middleware(request: NextRequest) {
     }
   );
 
-  const { data: { user } } = await supabase.auth.getUser();
+  // Use getSession() instead of getUser() — reads from the cookie without
+  // making a network request to Supabase, eliminating rate limit errors.
+  const { data: { session } } = await supabase.auth.getSession();
 
   // Cache the result to avoid repeated calls
   if (cacheKey) {
-    authCache.set(cacheKey, { valid: !!user, expiresAt: Date.now() + CACHE_TTL_MS });
+    authCache.set(cacheKey, { valid: !!session, expiresAt: Date.now() + CACHE_TTL_MS });
     // Prevent unbounded cache growth
     if (authCache.size > 500) {
       const firstKey = authCache.keys().next().value;
